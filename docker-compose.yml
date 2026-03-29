@@ -1,0 +1,94 @@
+version: '3.8'
+
+services:
+  # MongoDB Service
+  mongodb:
+    image: mongo:7.0
+    container_name: document_insights_mongo
+    ports:
+      - "27017:27017"
+    environment:
+      MONGO_INITDB_DB: document_insights
+    volumes:
+      - mongodb_data:/data/db
+    healthcheck:
+      test: echo 'db.runCommand("ping").ok' | mongosh localhost:27017/document_insights --quiet
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - document_network
+
+  # Redis Service
+  redis:
+    image: redis:7.0-alpine
+    container_name: document_insights_redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - document_network
+
+  # FastAPI Application
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: document_insights_api
+    ports:
+      - "8000:8000"
+    environment:
+      MONGODB_URL: mongodb://mongodb:27017
+      MONGODB_DB: document_insights
+      REDIS_URL: redis://redis:6379/0
+      QUEUE_NAME: document_queue
+      CACHE_TTL_SECONDS: 3600
+      ACTIVE_JOB_LIMIT: 3
+    depends_on:
+      mongodb:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - .:/app
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+    networks:
+      - document_network
+
+  # Background Worker
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: document_insights_worker
+    environment:
+      MONGODB_URL: mongodb://mongodb:27017
+      MONGODB_DB: document_insights
+      REDIS_URL: redis://redis:6379/0
+      QUEUE_NAME: document_queue
+      CACHE_TTL_SECONDS: 3600
+      ACTIVE_JOB_LIMIT: 3
+    depends_on:
+      mongodb:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    volumes:
+      - .:/app
+    command: python -m app.workers.document_worker
+    networks:
+      - document_network
+
+volumes:
+  mongodb_data:
+  redis_data:
+
+networks:
+  document_network:
+    driver: bridge
